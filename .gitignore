@@ -1,0 +1,5 @@
+# Ignore secrets and local DB files
+.env
+*.db
+*.csv
+__pycache__/
