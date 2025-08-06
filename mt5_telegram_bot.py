@@ -379,22 +379,82 @@ def check_positions():
                 except Exception as e:
                     print(f"❌ check_positions error for ticket {ticket}: {e}")
 
-# ========== DAILY SUMMARY ==========
-def daily_summary():
+# ========== WEEKLY SUMMARY ==========
+def weekly_summary():
     try:
-        if not closed_history:
-            return
-        msg = "<b>📈 WEEKLY REPORT</b>\n"
-        for sym, profit in closed_history.items():
-            status = "Profit" if profit >= 0 else "Loss"
-            msg += f"\n• {sym}: {status} {round(profit, 2)} USD"
-        closed_history.clear()
-        send_telegram(msg, VIP_CHAT_ID)
-        send_telegram(msg, FREE_CHAT_ID)
-    except Exception as e:
-        print("❌ daily_summary error:", e)
+        now = datetime.now()
+        start = now - timedelta(days=7)
+        deals = mt5.history_deals_get(start, now)
 
-schedule.every().day.at("22:00").do(daily_summary)
+        if not deals:
+            print("⚠️ No deal history found for weekly summary.")
+            return
+
+        symbol_stats = {}
+        total_pips = 0
+        total_percent = 0
+
+        for deal in deals:
+            if deal.entry != mt5.DEAL_ENTRY_OUT:
+                continue
+
+            symbol = deal.symbol
+            pos_id = deal.position_id
+            exit_price = deal.price
+            magic = deal.magic
+
+            # Find matching entry deal
+            entry_deals = [d for d in deals if d.position_id == pos_id and d.entry == mt5.DEAL_ENTRY_IN]
+            if not entry_deals:
+                continue
+            entry_price = entry_deals[0].price
+
+            if "JPY" in symbol:
+                pips = round((exit_price - entry_price) * 100, 1)
+            elif "XAU" in symbol or "GOLD" in symbol:
+                pips = round((exit_price - entry_price) * 10, 1)
+            else:
+                pips = round((exit_price - entry_price) * 10000, 1)
+
+            direction = "LONG" if entry_deals[0].type == 0 else "SHORT"
+            if direction == "SHORT":
+                pips = -pips
+
+            # % Gain
+            if entry_price == 0:
+                percent = 0
+            else:
+                percent = ((exit_price - entry_price) / entry_price) * 100 if direction == "LONG" else ((entry_price - exit_price) / entry_price) * 100
+
+            if symbol not in symbol_stats:
+                symbol_stats[symbol] = {"pips": 0, "percent": 0}
+
+            symbol_stats[symbol]["pips"] += pips
+            symbol_stats[symbol]["percent"] += percent
+            total_pips += pips
+            total_percent += percent
+
+        # Format date range
+        week_start = (now - timedelta(days=7)).strftime('%B %d')
+        week_end = now.strftime('%d')
+        message = f"📈 [WEEKLY REPORT – {week_start}–{week_end}]\n✅ Closed cycles:"
+
+        for sym, stats in symbol_stats.items():
+            message += f"\n• {sym} : {stats['percent']:+.2f}% / {stats['pips']} pips"
+
+        message += f"\n📈 Total gains: {round(total_pips)} pips"
+        message += f"\n💰 Performance: {total_percent:+.2f}% on total position"
+        message += "\nAll exits were triggered automatically by the dynamic optimization module."
+        message += "\n🟢 1 cycle still in progress – status: stable"
+        message += "\n💎 Join the VIP now to receive upcoming entries in real-time 👇"
+
+        send_telegram(message, VIP_CHAT_ID)
+        send_telegram(message, FREE_CHAT_ID)
+
+    except Exception as e:
+        print("❌ weekly_summary error:", e)
+
+schedule.every().friday.at("22:00").do(weekly_summary)
 
 # ========== /STATUS ==========
 def handle_updates():

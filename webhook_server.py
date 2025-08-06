@@ -4,10 +4,10 @@ import sqlite3
 from flask import Flask, request, jsonify
 import requests
 from datetime import datetime, timedelta
-from dotenv import load_dotenv  # ✅ load from .env
+from dotenv import load_dotenv
 
 # === LOAD ENV VARS ===
-load_dotenv()  # Load from .env file if present
+load_dotenv()
 
 # === CONFIG ===
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
@@ -23,10 +23,10 @@ app = Flask(__name__)
 def find_user_by_email(email):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT telegram_id FROM users WHERE email = ?", (email,))
+    cursor.execute("SELECT telegram_id, expiry FROM users WHERE email = ?", (email,))
     result = cursor.fetchone()
     conn.close()
-    return result[0] if result else None
+    return result if result else (None, None)
 
 def set_plan(telegram_id, plan, expiry):
     conn = sqlite3.connect(DB_PATH)
@@ -70,7 +70,6 @@ def send_invite_link(telegram_id, expiry):
         send_message(telegram_id, "✅ Payment received, but failed to generate group link. Contact support.")
 
 # === STRIPE WEBHOOK HANDLER ===
-print("[DEBUG] Webhook received")
 @app.route("/webhook", methods=["POST"])
 def stripe_webhook():
     payload = request.data
@@ -88,38 +87,60 @@ def stripe_webhook():
         telegram_id = session["metadata"].get("telegram_id")
         email = session.get("customer_email")
 
-        print(f"[DEBUG] Telegram ID from metadata: {telegram_id}")
-        print(f"[DEBUG] Stripe email: {email}")
-
         if telegram_id:
             expiry = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
             set_plan(telegram_id, "VIP", expiry)
             send_invite_link(telegram_id, expiry)
-        else:
-            print("[WARN] No telegram_id found in metadata")
-
-
-        # Handle other events...
         return jsonify({"status": "ok"}), 200
-
 
     elif event_type == "invoice.paid":
         session = event["data"]["object"]
-        email = session["customer_email"]
+        email = session.get("customer_email")
         if email:
-            telegram_id = find_user_by_email(email)
+            telegram_id, old_expiry = find_user_by_email(email)
             if telegram_id:
-                new_expiry = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+                now = datetime.now()
+                try:
+                    base = max(now, datetime.strptime(old_expiry, "%Y-%m-%d"))
+                except:
+                    base = now
+                new_expiry = (base + timedelta(days=30)).strftime('%Y-%m-%d')
                 set_plan(telegram_id, "VIP", new_expiry)
                 send_message(telegram_id, f"🔁 Your subscription has renewed!\nAccess extended until *{new_expiry}*.")
 
-    elif event_type == "customer.subscription.deleted":
+    elif event_type in ["customer.subscription.deleted", "customer.subscription.cancelled"]:
         session = event["data"]["object"]
-        email = session["customer_email"]
+        customer_id = session.get("customer")
+        if customer_id:
+            customer = stripe.Customer.retrieve(customer_id)
+            email = customer.get("email")
+            if email:
+                telegram_id, _ = find_user_by_email(email)
+                if telegram_id:
+                    downgrade_user(telegram_id)
+    
+    elif event_type == "customer.subscription.updated":
+    session = event["data"]["object"]
+    if session.get("cancel_at_period_end"):
+        customer_id = session.get("customer")
+        if customer_id:
+            customer = stripe.Customer.retrieve(customer_id)
+            email = customer.get("email")
+            current_period_end = datetime.fromtimestamp(session["current_period_end"]).strftime('%Y-%m-%d')
+            if email:
+                telegram_id, _ = find_user_by_email(email)
+                if telegram_id:
+                    # Optional: mark them as 'cancelled', or notify them
+                    send_message(telegram_id, f"⚠️ Your subscription will end on *{current_period_end}*.\nYou’ll be moved to Free tier then.")
+
+
+    elif event_type == "invoice.payment_failed":
+        session = event["data"]["object"]
+        email = session.get("customer_email")
         if email:
-            telegram_id = find_user_by_email(email)
+            telegram_id, _ = find_user_by_email(email)
             if telegram_id:
-                downgrade_user(telegram_id)
+                send_message(telegram_id, "⚠️ Payment failed!\nPlease update your card to avoid losing VIP access.")
 
     return jsonify({"status": "ok"}), 200
 
