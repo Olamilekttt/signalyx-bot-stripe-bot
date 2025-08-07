@@ -35,6 +35,41 @@ def set_plan(telegram_id, plan, expiry):
     conn.commit()
     conn.close()
 
+def extend_user_vip(telegram_id, days=30):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        # Get current expiry
+        cursor.execute("SELECT expiry FROM users WHERE telegram_id = ?", (telegram_id,))
+        result = cursor.fetchone()
+
+        if result:
+            current_expiry_str = result[0]
+
+            # Convert string to datetime object
+            current_expiry = datetime.strptime(current_expiry_str, "%Y-%m-%d")
+
+            # If expired, start from today
+            today = datetime.now()
+            base_date = max(current_expiry, today)
+
+            # Add days
+            new_expiry = base_date + timedelta(days=days)
+            new_expiry_str = new_expiry.strftime("%Y-%m-%d")
+
+            # Update DB
+            cursor.execute("UPDATE users SET expiry = ? WHERE telegram_id = ?", (new_expiry_str, telegram_id))
+            conn.commit()
+
+            print(f"✅ VIP access extended for user {telegram_id} until {new_expiry_str}")
+        else:
+            print(f"⚠️ No user found with telegram_id: {telegram_id}")
+    except Exception as e:
+        print("❌ Error extending user:", e)
+    finally:
+        conn.close()
+
 def downgrade_user(telegram_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -93,21 +128,6 @@ def stripe_webhook():
             send_invite_link(telegram_id, expiry)
         return jsonify({"status": "ok"}), 200
 
-    elif event_type == "invoice.paid":
-        session = event["data"]["object"]
-        email = session.get("customer_email")
-        if email:
-            telegram_id, old_expiry = find_user_by_email(email)
-            if telegram_id:
-                now = datetime.now()
-                try:
-                    base = max(now, datetime.strptime(old_expiry, "%Y-%m-%d"))
-                except:
-                    base = now
-                new_expiry = (base + timedelta(days=30)).strftime('%Y-%m-%d')
-                set_plan(telegram_id, "VIP", new_expiry)
-                send_message(telegram_id, f"🔁 Your subscription has renewed!\nAccess extended until *{new_expiry}*.")
-
     elif event_type in ["customer.subscription.deleted", "customer.subscription.cancelled"]:
         session = event["data"]["object"]
         customer_id = session.get("customer")
@@ -133,7 +153,27 @@ def stripe_webhook():
                     if telegram_id:
                         # Optional: mark them as 'cancelled', or notify them
                         send_message(telegram_id, f"⚠️ Your subscription will end on *{current_period_end}*.\nYou’ll be moved to Free tier then.")
+    
+    elif event_type == "invoice.paid":
+        session = event["data"]["object"]
+        customer_id = session.get("customer")
 
+        if customer_id:
+            customer = stripe.Customer.retrieve(customer_id)
+            email = customer.get("email")
+
+            if email:
+                telegram_id, _ = find_user_by_email(email)
+
+                if telegram_id:
+                    # Extend their expiry by 30 days (or your logic)
+                    extend_user_vip(telegram_id, days=30)
+                    send_message(
+                        telegram_id,
+                        "🔁 Your subscription has renewed!\nYour VIP access has been extended by 30 days."
+
+                    )
+                    
 
     elif event_type == "invoice.payment_failed":
         session = event["data"]["object"]
