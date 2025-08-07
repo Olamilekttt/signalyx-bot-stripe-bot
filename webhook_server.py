@@ -120,18 +120,19 @@ def stripe_webhook():
                     downgrade_user(telegram_id)
     
     elif event_type == "customer.subscription.updated":
-    session = event["data"]["object"]
-    if session.get("cancel_at_period_end"):
-        customer_id = session.get("customer")
-        if customer_id:
-            customer = stripe.Customer.retrieve(customer_id)
-            email = customer.get("email")
-            current_period_end = datetime.fromtimestamp(session["current_period_end"]).strftime('%Y-%m-%d')
-            if email:
-                telegram_id, _ = find_user_by_email(email)
-                if telegram_id:
-                    # Optional: mark them as 'cancelled', or notify them
-                    send_message(telegram_id, f"⚠️ Your subscription will end on *{current_period_end}*.\nYou’ll be moved to Free tier then.")
+        print("Got updated event")
+        session = event["data"]["object"]
+        if session.get("cancel_at_period_end"):
+            customer_id = session.get("customer")
+            if customer_id:
+                customer = stripe.Customer.retrieve(customer_id)
+                email = customer.get("email")
+                current_period_end = datetime.fromtimestamp(session["current_period_end"]).strftime('%Y-%m-%d')
+                if email:
+                    telegram_id, _ = find_user_by_email(email)
+                    if telegram_id:
+                        # Optional: mark them as 'cancelled', or notify them
+                        send_message(telegram_id, f"⚠️ Your subscription will end on *{current_period_end}*.\nYou’ll be moved to Free tier then.")
 
 
     elif event_type == "invoice.payment_failed":
